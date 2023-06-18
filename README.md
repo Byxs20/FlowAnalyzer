@@ -5,7 +5,7 @@
 Install the package using pip:
 
 ```
-pip3 insatll FlowAnalyzer
+pip3 install FlowAnalyzer
 ```
 
 # Usage
