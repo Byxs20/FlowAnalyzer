@@ -4,8 +4,7 @@ from FlowAnalyzer import FlowAnalyzer
 
 
 baseDir = os.path.dirname(os.path.abspath(__file__))
-display_filter = display_filter = "(http.request and urlencoded-form) or (http.request and data-text-lines) or (http.request and mime_multipart) or (http.response.code == 200 and data-text-lines)"
-
+display_filter = "(http.request and urlencoded-form) or (http.request and data-text-lines) or (http.request and mime_multipart) or (http.response.code == 200 and data-text-lines)"
 jsonPath = FlowAnalyzer.get_json_data(os.path.join(baseDir, "flow.pcapng"), display_filter=display_filter)
 
 for count, dic in enumerate(FlowAnalyzer(jsonPath).generate_http_dict_pairs(), start=1):
