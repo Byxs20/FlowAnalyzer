@@ -53,19 +53,23 @@ class FlowAnalyzer:
             packet = packet["_source"]["layers"]
             file_data = packet.get("tcp.reassembled.data") or packet["tcp.payload"]
             if packet.get("http.request_in"):
-                response.append({"response_num": packet["frame.number"][0], "request_in": packet["http.request_in"][0], "http_body": file_data[0]})
+                response.append({"response_num": packet["frame.number"][0], "request_in": packet["http.request_in"][0], "full_request": file_data[0]})
             else:
                 request[packet["frame.number"][0]] = file_data[0]
         return request, response
     
-    def generate_http_dict_pairs(self, extract=True):
+    def generate_http_dict_pairs(self, save_http_header=False):
         """生成HTTP请求和响应信息的字典对
 
         Parameters
         ----------
-        extract : bool, optional
-            指示是否提取HTTP文件数据，默认为True，表示提取，否则返回原始数据
-
+        save_http_header : bool, optional
+            指是否提取HTTP请求的全部，默认为False，表示只提取请求体，否则返回整个HTTP请求，如下结构：
+            请求行：请求方法、请求目标和 HTTP 协议版本组成，例如 POST /login.php HTTP/1.1。
+            请求头：包含了各种请求的元数据，比如 Host、Content-Length、User-Agent 等。每个请求头都由一个字段名和对应的值组成，以冒号分隔，例如 Host: 192.168.52.176。
+            空行：用于分隔请求头和请求体，由两个连续的回车换行符组成。
+            请求体：包含了请求的实际数据，对于 POST 请求来说，请求体通常包含表单数据或其他数据，以便发送给服务器进行处理。
+            
         Yields
         ------
         Iterator[dict]
@@ -75,21 +79,17 @@ class FlowAnalyzer:
         for resp in response:
             frame_num = resp["response_num"]
             request_num = resp["request_in"]
-            http_body = request.get(request_num)
+            full_request = request.get(request_num)
             yield {
                 "response": [
                     frame_num,
-                    self.extract_http_file_data(resp['http_body'])
-                    if extract
-                    else resp['http_body'],
+                    self.extract_http_file_data(resp['full_request'], save_http_header)
                 ],
                 "request": [
                     request_num,
-                    self.extract_http_file_data(http_body)
-                    if http_body and extract
-                    else http_body,
+                    self.extract_http_file_data(full_request, save_http_header)
                 ]
-                if http_body
+                if full_request
                 else None,
             }
 
@@ -118,30 +118,39 @@ class FlowAnalyzer:
         return jsonPath
 
     @staticmethod
-    def extract_http_file_data(http_body):
+    def extract_http_file_data(full_request, save_http_header=False):
+        # sourcery skip: merge-else-if-into-elif, swap-if-else-branches
         """提取HTTP请求或响应中的文件数据
 
         Parameters
         ----------
-        http_body : str
+        full_request : str
             HTTP请求或响应的消息体
+        save_http_header : bool, optional
+            指是否提取HTTP请求的全部，默认为False，表示只提取请求体，否则返回整个HTTP请求，如下结构：
+            请求行：请求方法、请求目标和 HTTP 协议版本组成，例如 POST /login.php HTTP/1.1。
+            请求头：包含了各种请求的元数据，比如 Host、Content-Length、User-Agent 等。每个请求头都由一个字段名和对应的值组成，以冒号分隔，例如 Host: 192.168.52.176。
+            空行：用于分隔请求头和请求体，由两个连续的回车换行符组成。
+            请求体：包含了请求的实际数据，对于 POST 请求来说，请求体通常包含表单数据或其他数据，以便发送给服务器进行处理。
 
         Returns
         -------
         bytes
             解压缩后的文件数据
         """
-        http_body = bytes.fromhex(http_body)
-        if not http_body.endswith(b"\r\n\r\n"):
-            num = http_body.find(b"\r\n\r\n")
-            data = http_body[num+4:]
+        full_request = bytes.fromhex(full_request)
+        if not full_request.endswith(b"\r\n\r\n"):
+            if not save_http_header:
+                num = full_request.find(b"\r\n\r\n")
+                full_request = full_request[num+4:]
         else:
-            num = http_body.find(b"\r\n\r\n")
-            data = re.findall(b'^\r\n\r\n.*?\r\n(.*)\r\n.*?\r\n\r\n$', http_body[num:], flags=re.DOTALL)[0]
-            data = re.sub(b"\r\n.{4}\r\n", b"", data) # 由于是多个tcp所以需要去除应该是长度的字节 不确定是不是4个字节 后期可能出现bug
-        
+            if not save_http_header:
+                num = full_request.find(b"\r\n\r\n")
+                full_request = re.findall(b'^\r\n\r\n.*?\r\n(.*)\r\n.*?\r\n\r\n$', full_request[num:], flags=re.DOTALL)[0]
+            full_request = re.sub(b"\r\n.{4}\r\n", b"", full_request) # 由于是多个tcp所以需要去除应该是长度的字节 不确定是不是4个字节 后期可能出现bug
+            
         try:
-            return gzip.decompress(data)
+            return gzip.decompress(full_request)
         except gzip.BadGzipFile:
-            return data
+            return full_request
         
