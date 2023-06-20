@@ -151,6 +151,6 @@ class FlowAnalyzer:
             
         try:
             return gzip.decompress(full_request)
-        except gzip.BadGzipFile:
+        except Exception:
             return full_request
         
