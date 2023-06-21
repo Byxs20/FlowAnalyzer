@@ -40,6 +40,7 @@ class FlowAnalyzer:
             raise ValueError("您的tshark导出的JSON文件内容为空！JSON路径：%s" % self.jsonPath)
 
     def parse_http_json(self) -> Tuple[dict, list]:
+        # sourcery skip: use-named-expression
         """解析JSON数据文件中的HTTP请求和响应信息
 
         Returns
@@ -53,31 +54,39 @@ class FlowAnalyzer:
         request, response = {}, []
         for packet in data:
             packet = packet["_source"]["layers"]
-            time_epoch = packet.get("frame.time_epoch")
-            full_request = packet.get(
-                "tcp.reassembled.data") or packet["tcp.payload"]
-
-            if packet.get("http.request_in"):
-                response.append({"response_num": packet["frame.number"][0], "request_in": packet["http.request_in"]
-                                [0], "full_request": full_request[0], "time_epoch": float(time_epoch[0])})
+            time_epoch = float(packet["frame.time_epoch"][0]) if packet.get("frame.time_epoch") else None
+            full_request = packet["tcp.reassembled.data"][0] if packet.get("tcp.reassembled.data") else packet["tcp.payload"][0]
+            response_num = int(packet["frame.number"][0]) if packet.get("frame.number") else None
+            request_num = int(packet["http.request_in"][0]) if packet.get("http.request_in") else None
+            
+            if request_num:
+                response.append({"response_num": response_num, "request_in": request_num, "full_request": full_request, "time_epoch": time_epoch})
             else:
-                request[packet["frame.number"][0]] = {
-                    "full_request": full_request[0], "time_epoch": float(time_epoch[0])}
+                request[response_num] = {"full_request": full_request, "time_epoch": time_epoch}
         return request, response
 
-    def generate_http_dict_pairs(self, http_header=False, time_epoch=False):
+    def generate_http_dict_pairs(self, preserve_http_headers=False, preserve_start_time=False):
         """生成HTTP请求和响应信息的字典对
 
         Parameters
         ----------
-        http_header : bool, optional
-            指是否提取HTTP请求的全部，默认为False，表示只提取请求体，否则返回整个HTTP请求，如下结构：
-            请求行：请求方法、请求目标和 HTTP 协议版本组成，例如 POST /login.php HTTP/1.1。
-            请求头：包含了各种请求的元数据，比如 Host、Content-Length、User-Agent 等。每个请求头都由一个字段名和对应的值组成，以冒号分隔，例如 Host: 192.168.52.176。
-            空行：用于分隔请求头和请求体，由两个连续的回车换行符组成。
-            请求体：包含了请求的实际数据，对于 POST 请求来说，请求体通常包含表单数据或其他数据，以便发送给服务器进行处理。
-        time_epoch : bool, optional
-            指是否提取HTTP请求的时间，指的是开始时间
+        preserve_http_headers : bool, optional
+            指是否保留HTTP除了请求体/返回体以外的所有HTTP头部信息，默认为False，只会返回HTTP请求体或者返回体
+            
+            如下结构：
+            请求行/返回行：
+                请求行：指的是HTTP请求中的第一行，包含了HTTP方法、请求的资源路径和HTTP协议版本。例如：GET /index.html HTTP/1.1
+                返回行：指的是HTTP响应中的第一行，包含了HTTP协议版本、响应状态码和相应的状态描述。例如：HTTP/1.1 200 OK
+            请求头/返回头：
+                请求头：包含了HTTP请求的相关信息，以键值对的形式出现，每个键值对占据一行。常见的请求头包括Host、User-Agent、Content-Type等。例如：Host: example.com
+                返回头：包含了HTTP响应的相关信息，也是以键值对的形式出现，每个键值对占据一行。常见的返回头包括Content-Type、Content-Length、Server等。例如：Content-Type: text/html
+            空行：用于分隔请求头和请求体，由两个连续的回车换行符组成
+            请求体/返回体：
+                请求体：包含了HTTP请求中的实际数据部分，通常在POST请求中使用。请求体可以是表单数据、JSON数据等，格式取决于请求头中的Content-Type字段
+                返回体：包含了HTTP响应中的实际数据部分，通常是服务器返回给客户端的内容。返回体的格式和内容取决于具体的请求和服务器的处理逻辑
+        
+        preserve_start_time : bool, optional
+            指是保留HTTP请求的时间，指的是开始时间
 
         Yields
         ------
@@ -90,10 +99,10 @@ class FlowAnalyzer:
             request_num = resp["request_in"]
             requ = request.get(request_num)
             
-            dic = {"response": [frame_num, self.extract_http_file_data(resp['full_request'], http_header)]}
-            dic["request"] = [request_num, self.extract_http_file_data(requ["full_request"], http_header)] if requ else None
+            dic = {"response": [frame_num, self.extract_http_file_data(resp['full_request'], preserve_http_headers)]}
+            dic["request"] = [request_num, self.extract_http_file_data(requ["full_request"], preserve_http_headers)] if requ else None
 
-            if time_epoch:
+            if preserve_start_time:
                 dic["response"].append(resp["time_epoch"])
                 dic["request"].append(requ["time_epoch"]) if requ else None
             yield dic
@@ -125,7 +134,7 @@ class FlowAnalyzer:
         return jsonPath
 
     @staticmethod
-    def extract_http_file_data(full_request, http_header=False):
+    def extract_http_file_data(full_request, preserve_http_headers=False):
         # sourcery skip: merge-else-if-into-elif, swap-if-else-branches
         """提取HTTP请求或响应中的文件数据
 
@@ -133,12 +142,20 @@ class FlowAnalyzer:
         ----------
         full_request : str
             HTTP请求或响应的消息体
-        http_header : bool, optional
-            指是否提取HTTP请求的全部，默认为False，表示只提取请求体，否则返回整个HTTP请求，如下结构：
-            请求行：请求方法、请求目标和 HTTP 协议版本组成，例如 POST /login.php HTTP/1.1。
-            请求头：包含了各种请求的元数据，比如 Host、Content-Length、User-Agent 等。每个请求头都由一个字段名和对应的值组成，以冒号分隔，例如 Host: 192.168.52.176。
-            空行：用于分隔请求头和请求体，由两个连续的回车换行符组成。
-            请求体：包含了请求的实际数据，对于 POST 请求来说，请求体通常包含表单数据或其他数据，以便发送给服务器进行处理。
+        preserve_http_headers : bool, optional
+            指是否保留HTTP除了请求体/返回体以外的所有HTTP头部信息，默认为False，只会返回HTTP请求体或者返回体
+            
+            如下结构：
+            请求行/返回行：
+                请求行：指的是HTTP请求中的第一行，包含了HTTP方法、请求的资源路径和HTTP协议版本。例如：GET /index.html HTTP/1.1
+                返回行：指的是HTTP响应中的第一行，包含了HTTP协议版本、响应状态码和相应的状态描述。例如：HTTP/1.1 200 OK
+            请求头/返回头：
+                请求头：包含了HTTP请求的相关信息，以键值对的形式出现，每个键值对占据一行。常见的请求头包括Host、User-Agent、Content-Type等。例如：Host: example.com
+                返回头：包含了HTTP响应的相关信息，也是以键值对的形式出现，每个键值对占据一行。常见的返回头包括Content-Type、Content-Length、Server等。例如：Content-Type: text/html
+            空行：用于分隔请求头和请求体，由两个连续的回车换行符组成
+            请求体/返回体：
+                请求体：包含了HTTP请求中的实际数据部分，通常在POST请求中使用。请求体可以是表单数据、JSON数据等，格式取决于请求头中的Content-Type字段
+                返回体：包含了HTTP响应中的实际数据部分，通常是服务器返回给客户端的内容。返回体的格式和内容取决于具体的请求和服务器的处理逻辑
 
         Returns
         -------
@@ -159,4 +176,4 @@ class FlowAnalyzer:
 
         with contextlib.suppress(Exception):
             file_data = gzip.decompress(file_data)
-        return header + b"\r\n\r\n" + file_data if http_header else file_data
+        return header + b"\r\n\r\n" + file_data if preserve_http_headers else file_data
