@@ -2,6 +2,7 @@ import os
 import re
 import json
 import gzip
+import contextlib
 import subprocess
 from typing import Tuple
 
@@ -99,7 +100,7 @@ class FlowAnalyzer:
 
     @staticmethod
     def get_json_data(filePath, display_filter):
-        """获取JSON数据并保存至文件
+        """获取JSON数据并保存至文件，保存目录是当前工作目录，也就是您运行脚本所在目录
 
         Parameters
         ----------
@@ -142,22 +143,20 @@ class FlowAnalyzer:
         Returns
         -------
         bytes
-            解压缩后的文件数据
+            HTTP的bytes类型，如果有Gzip数据会自动解压缩
         """
         full_request = bytes.fromhex(full_request)
-        if not full_request.endswith(b"\r\n\r\n"):
-            if not http_header:
-                num = full_request.find(b"\r\n\r\n")
-                full_request = full_request[num+4:]
-        else:
-            if not http_header:
-                num = full_request.find(b"\r\n\r\n")
-                full_request = re.findall(
-                    b'^\r\n\r\n.*?\r\n(.*)\r\n.*?\r\n\r\n$', full_request[num:], flags=re.DOTALL)[0]
+        num = full_request.find(b"\r\n\r\n")
+        header = full_request[:num]
+        
+        if full_request.endswith(b"\r\n\r\n"):
+            ret = re.findall(b'^\r\n\r\n.*?\r\n(.*)\r\n.*?\r\n\r\n$', full_request[num:], flags=re.DOTALL)
+            # 判断是否有file_data，没有的话就为b""空字符串
             # 由于是多个tcp所以需要去除应该是长度的字节 不确定是不是4个字节 后期可能出现bug
-            full_request = re.sub(b"\r\n.{4}\r\n", b"", full_request)
+            file_data = re.sub(b"\r\n.{4}\r\n", b"", ret[0]) if ret != [] else b""
+        else:
+            file_data = full_request[num+4:]
 
-        try:
-            return gzip.decompress(full_request)
-        except Exception:
-            return full_request
+        with contextlib.suppress(Exception):
+            file_data = gzip.decompress(file_data)
+        return header + b"\r\n\r\n" + file_data if http_header else file_data
