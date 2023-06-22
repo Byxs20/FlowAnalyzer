@@ -167,10 +167,10 @@ class FlowAnalyzer:
         header = full_request[:num]
         
         if full_request.endswith(b"\r\n\r\n"):
-            ret = re.findall(b'^\r\n\r\n.*?\r\n(.*)\r\n.*?\r\n\r\n$', full_request[num:], flags=re.DOTALL)
             # 判断是否有file_data，没有的话就为b""空字符串
             # 由于是多个tcp所以需要去除应该是长度的字节 不确定是不是4个字节 后期可能出现bug
-            file_data = re.sub(b"\r\n.{4}\r\n", b"", ret[0]) if ret != [] else b""
+            ret = re.findall(b'^\r\n\r\n[0-9a-f]{1,}\r\n(.*)\r\n\x30\r\n\r\n$', full_request[num:], flags=re.DOTALL)
+            file_data = re.sub(b"\r\n[0-9a-f]{1,}\r\n", b"", ret[0]) if ret != [] else b""
         else:
             file_data = full_request[num+4:]
 
