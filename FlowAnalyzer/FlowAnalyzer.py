@@ -1,5 +1,4 @@
 import os
-import re
 import json
 import gzip
 import contextlib
@@ -115,8 +114,43 @@ class FlowAnalyzer:
         proc.communicate()
         return jsonPath
 
-    @staticmethod
-    def extract_http_file_data(full_request):
+    def Split_HTTP_headers(self, file_data : bytes):
+        # sourcery skip: use-named-expression
+        headerEnd = file_data.find(b"\r\n\r\n")
+        if headerEnd != -1:
+            headerEnd += 4
+            return file_data[:headerEnd], file_data[headerEnd:]
+        elif file_data.find(b"\n\n") != -1:
+            headerEnd = file_data.index(b"\n\n") + 2
+            return file_data[:headerEnd], file_data[headerEnd:]
+        else:
+            print("[Warning] 没有找到headers和response的划分位置!")
+            return b"", file_data
+
+    def Dechunck_HTTP_response(self, file_data):
+        """解码分块TCP数据
+
+        Parameters
+        ----------
+        file_data : bytes
+            已经切割掉headers的TCP数据
+
+        Returns
+        -------
+        bytes
+            解码分块后的TCP数据
+        """
+        chunks = []
+        chunkSizeEnd = file_data.find(b"\n") + 1
+        lineEndings = b'\r\n' if bytes([file_data[chunkSizeEnd-2]]) == b'\r' else b'\n'
+        lineEndingsLength = len(lineEndings)
+        while chunkSize := int(file_data[:chunkSizeEnd], 16):
+            chunks.append(file_data[chunkSizeEnd:chunkSize + chunkSizeEnd])
+            file_data = file_data[chunkSizeEnd + chunkSize + lineEndingsLength:]
+            chunkSizeEnd = file_data.find(lineEndings) + lineEndingsLength
+        return b''.join(chunks)
+
+    def extract_http_file_data(self, full_request):
         # sourcery skip: merge-else-if-into-elif, swap-if-else-branches
         """提取HTTP请求或响应中的文件数据
         
@@ -131,17 +165,11 @@ class FlowAnalyzer:
             包含header和file_data的元组
         """
         full_request = bytes.fromhex(full_request)
-        num = full_request.find(b"\r\n\r\n")
-        header = full_request[:num]
-        
-        if full_request.endswith(b"\r\n\r\n"):
-            # 判断是否有file_data，没有的话就为b""空字符串
-            # 由于是多个tcp所以需要去除应该是长度的字节 不确定是不是4个字节 后期可能出现bug
-            ret = re.findall(b'^\r\n\r\n[0-9a-f]{1,}\r\n(.*)\r\n\x30\r\n\r\n$', full_request[num:], flags=re.DOTALL)
-            file_data = re.sub(b"\r\n[0-9a-f]{1,}\r\n", b"", ret[0]) if ret != [] else full_request[num+4:]
-        else:
-            file_data = full_request[num+4:]
+        header, file_data = self.Split_HTTP_headers(full_request)
 
+        with contextlib.suppress(Exception):
+            file_data = self.Dechunck_HTTP_response(file_data)
+        
         with contextlib.suppress(Exception):
             if file_data.startswith(b"\x1F\x8B"):
                 file_data = gzip.decompress(file_data)
