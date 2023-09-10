@@ -143,6 +143,6 @@ class FlowAnalyzer:
             file_data = full_request[num+4:]
 
         with contextlib.suppress(Exception):
-            if b"\x1F\x8B".startswith(file_data):
+            if file_data.startswith(b"\x1F\x8B"):
                 file_data = gzip.decompress(file_data)
         return header, file_data
