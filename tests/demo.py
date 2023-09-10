@@ -10,12 +10,12 @@ display_filter = "(http.request and urlencoded-form) or (http.request and data-t
 jsonPath = FlowAnalyzer.get_json_data(flowPath, display_filter=display_filter)
 for count, dic in enumerate(FlowAnalyzer(jsonPath).generate_http_dict_pairs(), start=1):
     print(f"[+] 正在处理第{count}个HTTP流!")
-    response_num, file_data = dic['response']
-    print("序号: {}返回包, 文件: {}".format(response_num, file_data))
     
-    request = dic.get("request")
-    if not request:
-        continue
-    
-    request_num, file_data = request
-    print("序号: {}请求包, 文件: {}".format(request_num, file_data))
+    request, response = dic.get("request"), dic["response"]
+    if request:
+        request_num, header, file_data, time_epoch = request['frame_num'], request['header'], request['file_data'], request['time_epoch']
+        print("序号: {}请求包, 请求头: {}, 文件: {}, 时间: {}".format(request_num, header, file_data, time_epoch))
+
+    if response:
+        response_num, header, file_data, time_epoch = response['frame_num'], response['header'], response['file_data'], response['time_epoch']
+        print("序号: {}请求包, 请求头: {}, 文件: {}, 时间: {}".format(response_num, header, file_data, time_epoch))
