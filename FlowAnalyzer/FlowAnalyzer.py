@@ -1,6 +1,7 @@
 import os
 import json
 import gzip
+import shutil
 import contextlib
 import subprocess
 from typing import Tuple, Dict, Iterable, NamedTuple
@@ -50,8 +51,7 @@ class FlowAnalyzer:
             当JSON文件内容为空时抛出异常
         """
         if not os.path.exists(self.jsonPath):
-            raise FileNotFoundError(
-                f"您的tshark导出的JSON文件没有找到！JSON路径：%s" % self.jsonPath)
+            raise FileNotFoundError(f"您的tshark导出的JSON文件没有找到！JSON路径：%s" % self.jsonPath)
 
         if os.path.getsize(self.jsonPath) == 0:
             raise ValueError("您的tshark导出的JSON文件内容为空！JSON路径：%s" % self.jsonPath)
@@ -123,14 +123,27 @@ class FlowAnalyzer:
         str
             保存JSON数据的文件路径
         """
-        # sourcery skip: use-fstring-for-formatting
-        jsonPath = os.path.join(os.getcwd(), "output.json")
-        command = 'tshark -r {} -Y "{}" -T json -e http.request_number -e http.response_number -e http.request_in -e tcp.reassembled.data -e frame.number -e tcp.payload -e frame.time_epoch > {}'.format(
-            filePath, display_filter, jsonPath)
+        # sourcery skip: replace-interpolation-with-fstring, use-fstring-for-formatting
+        if not os.path.exists(filePath):
+            raise FileNotFoundError("您的填写的流量包没有找到！流量包路径：%s" % filePath)
+            
+        oriDir = os.getcwd()
+        fileDir = os.path.dirname(filePath)
+        jsonPath = os.path.join(fileDir, "output.json")
+        
+        os.chdir(fileDir)
+        fileName = os.path.basename(filePath)
+        command = 'tshark -r {} -Y "{}" -T json -e http.request_number -e http.response_number -e http.request_in -e tcp.reassembled.data -e frame.number -e tcp.payload -e frame.time_epoch > output.json'.format(
+            fileName, display_filter)
         proc = subprocess.Popen(command, shell=True,
                                 stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         proc.communicate()
-        return jsonPath
+        
+        os.chdir(oriDir)
+        dst_JsonPath = os.path.join(oriDir, "output.json")
+        if jsonPath != dst_JsonPath:
+            shutil.move(jsonPath, dst_JsonPath)
+        return dst_JsonPath
 
     def Split_HTTP_headers(self, file_data: bytes) -> Tuple[bytes, bytes]:
         # sourcery skip: use-named-expression
