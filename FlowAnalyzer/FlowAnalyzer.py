@@ -4,6 +4,7 @@ import gzip
 import shutil
 import contextlib
 import subprocess
+from urllib import parse
 from typing import Tuple, Dict, Iterable, NamedTuple
 
 
@@ -12,6 +13,7 @@ class Request(NamedTuple):
     header: bytes
     file_data: bytes
     time_epoch: bytes
+    full_uri: str
 
 class Response(NamedTuple):
     frame_num: int
@@ -75,12 +77,14 @@ class FlowAnalyzer:
             full_request = packet["tcp.reassembled.data"][0] if packet.get("tcp.reassembled.data") else packet["tcp.payload"][0]
             frame_num = int(packet["frame.number"][0]) if packet.get("frame.number") else None
             request_in = int(packet["http.request_in"][0]) if packet.get("http.request_in") else frame_num
+            full_uri = parse.unquote(packet["http.request.full_uri"][0]) if packet.get("http.request.full_uri") else None
+            
             header, file_data = self.extract_http_file_data(full_request)
             
             if packet.get("http.response_number"):
                 responses[frame_num] = Response(frame_num=frame_num, request_in=request_in, header=header, file_data=file_data, time_epoch=time_epoch)
             else:
-                requests[frame_num] = Request(frame_num=frame_num, header=header, file_data=file_data, time_epoch=time_epoch)
+                requests[frame_num] = Request(frame_num=frame_num, header=header, file_data=file_data, time_epoch=time_epoch, full_uri=full_uri)
         return requests, responses
 
     def generate_http_dict_pairs(self) -> Iterable[HttpPair]:  # sourcery skip: use-named-expression
@@ -126,19 +130,20 @@ class FlowAnalyzer:
         # sourcery skip: replace-interpolation-with-fstring, use-fstring-for-formatting
         if not os.path.exists(filePath):
             raise FileNotFoundError("您的填写的流量包没有找到！流量包路径：%s" % filePath)
-            
+
         oriDir = os.getcwd()
         fileDir = os.path.dirname(filePath)
         jsonPath = os.path.join(fileDir, "output.json")
-        
+
         os.chdir(fileDir)
         fileName = os.path.basename(filePath)
-        command = 'tshark -r {} -Y "{}" -T json -e http.request_number -e http.response_number -e http.request_in -e tcp.reassembled.data -e frame.number -e tcp.payload -e frame.time_epoch > output.json'.format(
+        command = 'tshark -r {} -Y "{}" -T json -e http.request_number -e http.response_number -e http.request_in -e tcp.reassembled.data -e frame.number -e tcp.payload -e frame.time_epoch -e http.request.full_uri > output.json'.format(
             fileName, display_filter)
-        proc = subprocess.Popen(command, shell=True,
-                                stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-        proc.communicate()
         
+        _, stderr = subprocess.Popen(command, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE).communicate()
+        if stderr:
+            raise subprocess.SubprocessError(stderr.decode())
+
         os.chdir(oriDir)
         dst_JsonPath = os.path.join(oriDir, "output.json")
         if jsonPath != dst_JsonPath:
@@ -175,7 +180,11 @@ class FlowAnalyzer:
         chunkSizeEnd = file_data.find(b"\n") + 1
         lineEndings = b'\r\n' if bytes([file_data[chunkSizeEnd-2]]) == b'\r' else b'\n'
         lineEndingsLength = len(lineEndings)
-        while chunkSize := int(file_data[:chunkSizeEnd], 16):
+        while True:
+            chunkSize = int(file_data[:chunkSizeEnd], 16)
+            if not chunkSize:
+                break
+            
             chunks.append(file_data[chunkSizeEnd:chunkSize + chunkSizeEnd])
             file_data = file_data[chunkSizeEnd + chunkSize + lineEndingsLength:]
             chunkSizeEnd = file_data.find(lineEndings) + lineEndingsLength
