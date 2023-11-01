@@ -141,7 +141,7 @@ class FlowAnalyzer:
             fileName, display_filter)
 
         _, stderr = subprocess.Popen(command, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE).communicate()
-        if b"WARNING" not in stderr:
+        if stderr != b"" and b"WARNING" not in stderr:
             raise subprocess.SubprocessError(stderr.decode())
 
         os.chdir(oriDir)
