@@ -139,9 +139,9 @@ class FlowAnalyzer:
         fileName = os.path.basename(filePath)
         command = 'tshark -r {} -Y "{}" -T json -e http.request_number -e http.response_number -e http.request_in -e tcp.reassembled.data -e frame.number -e tcp.payload -e frame.time_epoch -e http.request.full_uri > output.json'.format(
             fileName, display_filter)
-        
+
         _, stderr = subprocess.Popen(command, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE).communicate()
-        if stderr:
+        if b"WARNING" not in stderr:
             raise subprocess.SubprocessError(stderr.decode())
 
         os.chdir(oriDir)
