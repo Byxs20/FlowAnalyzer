@@ -142,7 +142,7 @@ class FlowAnalyzer:
 
         _, stderr = subprocess.Popen(command, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE).communicate()
         if stderr != b"" and b"WARNING" not in stderr:
-            raise subprocess.SubprocessError(stderr.decode())
+            print(f"[Waring/Error]: {stderr}")
 
         os.chdir(oriDir)
         dst_JsonPath = os.path.join(oriDir, "output.json")
