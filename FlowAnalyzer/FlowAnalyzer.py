@@ -67,7 +67,7 @@ class FlowAnalyzer:
         tuple
             包含请求字典和响应列表的元组
         """
-        with open(self.jsonPath, "r") as f:
+        with open(self.jsonPath, "r", encoding='utf-8') as f:
             data = json.load(f)
         
         requests, responses = {}, {}
