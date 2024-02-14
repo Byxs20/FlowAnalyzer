@@ -14,6 +14,8 @@ pip3 install FlowAnalyzer -i https://pypi.org/simple
 
 # Usage
 
+请务必添加 `tshark.exe` 到环境变量，否则找不到会出错！
+
 ```
 $ git clone https://github.com/Byxs20/FlowAnalyzer.git
 $ cd ./FlowAnalyzer/
