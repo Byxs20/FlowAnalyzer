@@ -81,9 +81,15 @@ class FlowAnalyzer:
         for packet in data:
             packet = packet["_source"]["layers"]
             time_epoch = float(packet["frame.time_epoch"][0]) if packet.get("frame.time_epoch") else None
-            full_request = (
-                packet["tcp.reassembled.data"][0] if packet.get("tcp.reassembled.data") else packet["tcp.payload"][0]
-            )
+
+            if packet.get("tcp.reassembled.data"):
+                full_request = packet["tcp.reassembled.data"][0]
+            elif packet.get("tcp.payload"):
+                full_request = packet["tcp.payload"][0]
+            else:
+                # exported_pdu.exported_pdu
+                full_request = packet["exported_pdu.exported_pdu"][0]
+            
             frame_num = int(packet["frame.number"][0]) if packet.get("frame.number") else None
             request_in = int(packet["http.request_in"][0]) if packet.get("http.request_in") else frame_num
             full_uri = (
@@ -140,7 +146,7 @@ class FlowAnalyzer:
         # sourcery skip: replace-interpolation-with-fstring, use-fstring-for-formatting
         # tshark -r {} -Y "{}" -T json -e http.request_number -e http.response_number -e http.request_in -e tcp.reassembled.data -e frame.number -e tcp.payload -e frame.time_epoch -e http.request.full_uri > output.json
         command = (
-            'tshark -r {} -Y "{}" -T json '
+            'tshark -r {} -Y "(tcp.reassembled_in) or ({})" -T json '
             '-e http.request_number '
             '-e http.response_number '
             '-e http.request_in '
@@ -148,6 +154,7 @@ class FlowAnalyzer:
             '-e frame.number '
             '-e tcp.payload '
             '-e frame.time_epoch '
+            '-e exported_pdu.exported_pdu '
             '-e http.request.full_uri '
             '> output.json'.format(
                 fileName, display_filter
