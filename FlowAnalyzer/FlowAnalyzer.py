@@ -13,6 +13,7 @@ from .logging_config import configure_logger
 
 logger = configure_logger("FlowAnalyzer", logging.INFO)
 
+
 class Request(NamedTuple):
     frame_num: Optional[int]
     header: bytes
@@ -89,12 +90,10 @@ class FlowAnalyzer:
             else:
                 # exported_pdu.exported_pdu
                 full_request = packet["exported_pdu.exported_pdu"][0]
-            
+
             frame_num = int(packet["frame.number"][0]) if packet.get("frame.number") else None
             request_in = int(packet["http.request_in"][0]) if packet.get("http.request_in") else frame_num
-            full_uri = (
-                parse.unquote(packet["http.request.full_uri"][0]) if packet.get("http.request.full_uri") else None
-            )
+            full_uri = parse.unquote(packet["http.request.full_uri"][0]) if packet.get("http.request.full_uri") else None
 
             header, file_data = self.extract_http_file_data(full_request)
 
@@ -145,23 +144,51 @@ class FlowAnalyzer:
     def extract_json_file(fileName: str, display_filter: str, tshark_workDir: str) -> None:
         # sourcery skip: replace-interpolation-with-fstring, use-fstring-for-formatting
         # tshark -r {} -Y "{}" -T json -e http.request_number -e http.response_number -e http.request_in -e tcp.reassembled.data -e frame.number -e tcp.payload -e frame.time_epoch -e http.request.full_uri > output.json
-        command = (
-            'tshark -r {} -Y "(tcp.reassembled_in) or ({})" -T json '
-            '-e http.request_number '
-            '-e http.response_number '
-            '-e http.request_in '
-            '-e tcp.reassembled.data '
-            '-e frame.number '
-            '-e tcp.payload '
-            '-e frame.time_epoch '
-            '-e exported_pdu.exported_pdu '
-            '-e http.request.full_uri '
-            '> output.json'.format(
-                fileName, display_filter
-        ))
+
+        command = [
+            "tshark",
+            "-r",
+            fileName,
+            "-Y",
+            f"(tcp.reassembled_in) or ({display_filter})",
+            "-T",
+            "json",
+            "-e",
+            "http.request_number",
+            "-e",
+            "http.response_number",
+            "-e",
+            "http.request_in",
+            "-e",
+            "tcp.reassembled.data",
+            "-e",
+            "frame.number",
+            "-e",
+            "tcp.payload",
+            "-e",
+            "frame.time_epoch",
+            "-e",
+            "exported_pdu.exported_pdu",
+            "-e",
+            "http.request.full_uri" ">",
+            "output.json",
+        ]
+
         _, stderr = subprocess.Popen(command, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, cwd=tshark_workDir).communicate()
         if stderr != b"" and b"WARNING" not in stderr:
             print(f"[Waring/Error]: {stderr}")
+
+    @staticmethod
+    def move_and_addMD5Sum(tshark_jsonPath: str, jsonWordPath: str, MD5Sum: str) -> None:
+        if tshark_jsonPath != jsonWordPath:
+            shutil.move(tshark_jsonPath, jsonWordPath)
+
+        with open(jsonWordPath, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        data[0]["MD5Sum"] = MD5Sum
+
+        with open(jsonWordPath, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2)
 
     @staticmethod
     def get_json_data(filePath: str, display_filter: str) -> str:
@@ -193,20 +220,12 @@ class FlowAnalyzer:
         if os.path.exists(jsonWordPath):
             with open(jsonWordPath, "r", encoding="utf-8") as f:
                 data = json.load(f)
-            if data[0].get('MD5Sum') == MD5Sum:
+            if data[0].get("MD5Sum") == MD5Sum:
                 logger.debug("匹配HASH校验无误，自动返回Json文件路径!")
                 return jsonWordPath
-        FlowAnalyzer.extract_json_file(fileName, display_filter, tshark_workDir)
 
-        if tshark_jsonPath != jsonWordPath:
-            shutil.move(tshark_jsonPath, jsonWordPath)
-        
-        with open(jsonWordPath, "r", encoding="utf-8") as f:
-            data = json.load(f)
-        data[0]['MD5Sum'] = MD5Sum
-        
-        with open(jsonWordPath, "w", encoding="utf-8") as f:
-            json.dump(data, f, indent=2)
+        FlowAnalyzer.extract_json_file(fileName, display_filter, tshark_workDir)
+        FlowAnalyzer.move_and_addMD5Sum(tshark_jsonPath, jsonWordPath, MD5Sum)
         return jsonWordPath
 
     def Split_HTTP_headers(self, file_data: bytes) -> Tuple[bytes, bytes]:
