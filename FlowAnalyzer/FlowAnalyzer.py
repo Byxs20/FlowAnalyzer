@@ -15,19 +15,19 @@ logger = configure_logger("FlowAnalyzer", logging.INFO)
 
 
 class Request(NamedTuple):
-    frame_num: Optional[int]
+    frame_num: int
     header: bytes
     file_data: bytes
-    full_uri: Optional[str]
-    time_epoch: Optional[float]
+    full_uri: str
+    time_epoch: float
 
 
 class Response(NamedTuple):
-    frame_num: Optional[int]
+    frame_num: int
     header: bytes
     file_data: bytes
-    request_in: Optional[int]
-    time_epoch: Optional[float]
+    request_in: int
+    time_epoch: float
 
 
 class HttpPair(NamedTuple):
@@ -66,6 +66,37 @@ class FlowAnalyzer:
         if os.path.getsize(self.jsonPath) == 0:
             raise ValueError("您的tshark导出的JSON文件内容为空！JSON路径：%s" % self.jsonPath)
 
+    def parse_packet(self, packet: dict) -> Tuple[int, int, float, str, str]:
+        """解析Json中的关键信息字段
+
+        Parameters
+        ----------
+        packet : dict
+            传入Json字典
+
+        Returns
+        -------
+        Tuple[int, int, float, str, str]
+            frame_num, request_in, time_epoch, full_uri, full_request
+        """
+        # frame_num = int(packet["frame.number"][0]) if packet.get("frame.number") else None
+        # time_epoch = float(packet["frame.time_epoch"][0]) if packet.get("frame.time_epoch") else None
+        # full_uri = parse.unquote(packet["http.request.full_uri"][0]) if packet.get("http.request.full_uri") else None
+        
+        frame_num = int(packet["frame.number"][0])
+        request_in = int(packet["http.request_in"][0]) if packet.get("http.request_in") else frame_num
+        full_uri = parse.unquote(packet["http.request.full_uri"][0])
+        time_epoch = packet["frame.time_epoch"][0]
+
+        if packet.get("tcp.reassembled.data"):
+            full_request = packet["tcp.reassembled.data"][0]
+        elif packet.get("tcp.payload"):
+            full_request = packet["tcp.payload"][0]
+        else:
+            # exported_pdu.exported_pdu
+            full_request = packet["exported_pdu.exported_pdu"][0]
+        return frame_num, request_in, time_epoch, full_uri, full_request
+
     def parse_http_json(self) -> Tuple[Dict[int, Request], Dict[int, Response]]:
         # sourcery skip: use-named-expression
         """解析JSON数据文件中的HTTP请求和响应信息
@@ -81,20 +112,7 @@ class FlowAnalyzer:
         requests, responses = {}, {}
         for packet in data:
             packet = packet["_source"]["layers"]
-            time_epoch = float(packet["frame.time_epoch"][0]) if packet.get("frame.time_epoch") else None
-
-            if packet.get("tcp.reassembled.data"):
-                full_request = packet["tcp.reassembled.data"][0]
-            elif packet.get("tcp.payload"):
-                full_request = packet["tcp.payload"][0]
-            else:
-                # exported_pdu.exported_pdu
-                full_request = packet["exported_pdu.exported_pdu"][0]
-
-            frame_num = int(packet["frame.number"][0]) if packet.get("frame.number") else None
-            request_in = int(packet["http.request_in"][0]) if packet.get("http.request_in") else frame_num
-            full_uri = parse.unquote(packet["http.request.full_uri"][0]) if packet.get("http.request.full_uri") else None
-
+            frame_num, request_in, time_epoch, full_uri, full_request = self.parse_packet(packet)
             header, file_data = self.extract_http_file_data(full_request)
 
             if packet.get("http.response_number"):
@@ -146,32 +164,15 @@ class FlowAnalyzer:
         # tshark -r {} -Y "{}" -T json -e http.request_number -e http.response_number -e http.request_in -e tcp.reassembled.data -e frame.number -e tcp.payload -e frame.time_epoch -e http.request.full_uri > output.json
 
         command = [
-            "tshark",
-            "-r",
-            fileName,
-            "-Y",
-            f"(tcp.reassembled_in) or ({display_filter})",
-            "-T",
-            "json",
-            "-e",
-            "http.request_number",
-            "-e",
-            "http.response_number",
-            "-e",
-            "http.request_in",
-            "-e",
-            "tcp.reassembled.data",
-            "-e",
-            "frame.number",
-            "-e",
-            "tcp.payload",
-            "-e",
-            "frame.time_epoch",
-            "-e",
-            "exported_pdu.exported_pdu",
-            "-e",
-            "http.request.full_uri" ">",
-            "output.json",
+            "tshark", "-r", fileName,
+            "-Y", f"(tcp.reassembled_in) or ({display_filter})",
+            "-T", "json",
+            "-e", "http.request_number", "-e", "http.response_number", "-e", "http.request_in",
+            "-e", "tcp.reassembled.data", "-e", "frame.number", "-e", "tcp.payload",
+            "-e", "frame.time_epoch",
+            "-e", "exported_pdu.exported_pdu",
+            "-e", "http.request.full_uri",
+            ">", "output.json",
         ]
 
         _, stderr = subprocess.Popen(command, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, cwd=tshark_workDir).communicate()
