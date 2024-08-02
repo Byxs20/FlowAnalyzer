@@ -85,8 +85,8 @@ class FlowAnalyzer:
         
         frame_num = int(packet["frame.number"][0])
         request_in = int(packet["http.request_in"][0]) if packet.get("http.request_in") else frame_num
-        full_uri = parse.unquote(packet["http.request.full_uri"][0])
-        time_epoch = packet["frame.time_epoch"][0]
+        full_uri = parse.unquote(packet["http.request.full_uri"][0]) if packet.get("http.request.full_uri") else ""
+        time_epoch = float(packet["frame.time_epoch"][0])
 
         if packet.get("tcp.reassembled.data"):
             full_request = packet["tcp.reassembled.data"][0]
@@ -115,6 +115,7 @@ class FlowAnalyzer:
             frame_num, request_in, time_epoch, full_uri, full_request = self.parse_packet(packet)
             header, file_data = self.extract_http_file_data(full_request)
 
+            # 请求包使用 full_uri 来记录请求 url  返回包使用 request_in 来记录请求包的序号
             if packet.get("http.response_number"):
                 responses[frame_num] = Response(
                     frame_num=frame_num,
