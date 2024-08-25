@@ -214,7 +214,7 @@ class FlowAnalyzer:
 
         MD5Sum = FlowAnalyzer.get_hash(filePath, display_filter)
         workDir = os.getcwd()
-        tshark_workDir = os.path.dirname(filePath)
+        tshark_workDir = os.path.dirname(os.path.abspath(filePath))
         tshark_jsonPath = os.path.join(tshark_workDir, "output.json")
         jsonWordPath = os.path.join(workDir, "output.json")
         fileName = os.path.basename(filePath)
