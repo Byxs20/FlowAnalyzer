@@ -15,6 +15,8 @@ def configure_logger(logger_name, level=logging.DEBUG) -> logging.Logger:
     console_handler.setFormatter(formatter)
     return logger
 
+logger = configure_logger("FlowAnalyzer", logging.INFO)
+
 if __name__ == '__main__':
     logger = configure_logger("FlowAnalyzer")
     logger.info("This is a test!")
