@@ -217,11 +217,14 @@ class FlowAnalyzer:
         fileName = os.path.basename(filePath)
 
         if os.path.exists(jsonWordPath):
-            with open(jsonWordPath, "r", encoding="utf-8") as f:
-                data = json.load(f)
-            if data[0].get("MD5Sum") == MD5Sum:
-                logger.debug("匹配HASH校验无误，自动返回Json文件路径!")
-                return jsonWordPath
+            try:
+                with open(jsonWordPath, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                    if data[0].get("MD5Sum") == MD5Sum:
+                        logger.debug("匹配HASH校验无误，自动返回Json文件路径!")
+                        return jsonWordPath
+            except Exception:
+                logger.debug("默认的Json文件无法被正常解析, 正在重新生成josn文件中")
         
         tshark_path = FlowAnalyzer.get_tshark_path(tshark_path)
         FlowAnalyzer.extract_json_file(fileName, display_filter, tshark_workDir, tshark_path)
