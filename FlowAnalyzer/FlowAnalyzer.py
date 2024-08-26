@@ -2,16 +2,14 @@ import contextlib
 import gzip
 import hashlib
 import json
-import logging
 import os
 import shutil
 import subprocess
 from typing import Dict, Iterable, NamedTuple, Optional, Tuple
 from urllib import parse
 
-from .logging_config import configure_logger
-
-logger = configure_logger("FlowAnalyzer", logging.INFO)
+from .logging_config import logger
+from .Path import get_default_tshark_path
 
 
 class Request(NamedTuple):
@@ -79,10 +77,6 @@ class FlowAnalyzer:
         Tuple[int, int, float, str, str]
             frame_num, request_in, time_epoch, full_uri, full_request
         """
-        # frame_num = int(packet["frame.number"][0]) if packet.get("frame.number") else None
-        # time_epoch = float(packet["frame.time_epoch"][0]) if packet.get("frame.time_epoch") else None
-        # full_uri = parse.unquote(packet["http.request.full_uri"][0]) if packet.get("http.request.full_uri") else None
-        
         frame_num = int(packet["frame.number"][0])
         request_in = int(packet["http.request_in"][0]) if packet.get("http.request_in") else frame_num
         full_uri = parse.unquote(packet["http.request.full_uri"][0]) if packet.get("http.request.full_uri") else ""
@@ -160,16 +154,19 @@ class FlowAnalyzer:
             return hashlib.md5(f.read() + display_filter.encode()).hexdigest()
 
     @staticmethod
-    def extract_json_file(fileName: str, display_filter: str, tshark_workDir: str) -> None:
+    def extract_json_file(fileName: str, display_filter: str, tshark_workDir: str, tshark_path: str) -> None:
         # sourcery skip: replace-interpolation-with-fstring, use-fstring-for-formatting
-        # tshark -r {} -Y "{}" -T json -e http.request_number -e http.response_number -e http.request_in -e tcp.reassembled.data -e frame.number -e tcp.payload -e frame.time_epoch -e http.request.full_uri > output.json
-
         command = [
-            "tshark", "-r", fileName,
+            tshark_path,
+            "-r", fileName,
             "-Y", f"(tcp.reassembled_in) or ({display_filter})",
             "-T", "json",
-            "-e", "http.request_number", "-e", "http.response_number", "-e", "http.request_in",
-            "-e", "tcp.reassembled.data", "-e", "frame.number", "-e", "tcp.payload",
+            "-e", "http.request_number",
+            "-e", "http.response_number",
+            "-e", "http.request_in",
+            "-e", "tcp.reassembled.data",
+            "-e", "frame.number",
+            "-e", "tcp.payload",
             "-e", "frame.time_epoch",
             "-e", "exported_pdu.exported_pdu",
             "-e", "http.request.full_uri",
@@ -193,7 +190,7 @@ class FlowAnalyzer:
             json.dump(data, f, indent=2)
 
     @staticmethod
-    def get_json_data(filePath: str, display_filter: str) -> str:
+    def get_json_data(filePath: str, display_filter: str, tshark_path: Optional[str] = None) -> str:
         # sourcery skip: replace-interpolation-with-fstring
         """获取JSON数据并保存至文件，保存目录是当前工作目录，也就是您运行脚本所在目录
 
@@ -225,10 +222,34 @@ class FlowAnalyzer:
             if data[0].get("MD5Sum") == MD5Sum:
                 logger.debug("匹配HASH校验无误，自动返回Json文件路径!")
                 return jsonWordPath
-
-        FlowAnalyzer.extract_json_file(fileName, display_filter, tshark_workDir)
+        
+        tshark_path = FlowAnalyzer.get_tshark_path(tshark_path)
+        FlowAnalyzer.extract_json_file(fileName, display_filter, tshark_workDir, tshark_path)
         FlowAnalyzer.move_and_addMD5Sum(tshark_jsonPath, jsonWordPath, MD5Sum)
         return jsonWordPath
+
+    @staticmethod
+    def get_tshark_path(tshark_path: Optional[str]) -> str:
+        default_tshark_path = get_default_tshark_path()
+        if not os.path.exists(default_tshark_path):
+            logger.debug("没有检测到tshark存在, 请查看并检查tshark_path")
+
+        if tshark_path is None:
+            logger.debug("您没有传入tshark_path, 请传入tshark_path")
+        elif not os.path.exists(tshark_path):
+            logger.debug("传入的tshark_path不存在, 请查看并检查tshark_path")
+
+        use_tshark_path = None
+        if os.path.exists(default_tshark_path):
+            use_tshark_path = default_tshark_path
+
+        if tshark_path is not None and os.path.exists(tshark_path):
+            use_tshark_path = tshark_path
+
+        if use_tshark_path is None:
+            logger.critical("您没有配置 tshark_path 并且没有在参数中传入 tshark_path")
+            exit(-1)
+        return use_tshark_path
 
     def Split_HTTP_headers(self, file_data: bytes) -> Tuple[bytes, bytes]:
         # sourcery skip: use-named-expression
