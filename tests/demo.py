@@ -18,4 +18,4 @@ for http_seq_num, http in enumerate(FlowAnalyzer(jsonPath).generate_http_dict_pa
 
     if response:
         response_num, header, file_data, time_epoch = response.frame_num, response.header, response.file_data, response.time_epoch
-        print("序号: {}请求包, 请求头: {}, 文件: {}, 时间: {}".format(response_num, header, file_data, time_epoch))
+        print("序号: {}响应包, 响应头: {}, 文件: {}, 时间: {}".format(response_num, header, file_data, time_epoch))
