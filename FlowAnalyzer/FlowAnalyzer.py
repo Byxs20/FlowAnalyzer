@@ -110,7 +110,7 @@ class FlowAnalyzer:
             header, file_data = self.extract_http_file_data(full_request)
 
             # 请求包使用 full_uri 来记录请求 url  返回包使用 request_in 来记录请求包的序号
-            if packet.get("http.response_number"):
+            if packet.get("http.response.code"):
                 responses[frame_num] = Response(
                     frame_num=frame_num,
                     request_in=request_in,
@@ -161,8 +161,7 @@ class FlowAnalyzer:
             "-r", fileName,
             "-Y", f"(tcp.reassembled_in) or ({display_filter})",
             "-T", "json",
-            "-e", "http.request_number",
-            "-e", "http.response_number",
+            "-e", "http.response.code",
             "-e", "http.request_in",
             "-e", "tcp.reassembled.data",
             "-e", "frame.number",
@@ -224,7 +223,7 @@ class FlowAnalyzer:
                         logger.debug("匹配HASH校验无误，自动返回Json文件路径!")
                         return jsonWordPath
             except Exception:
-                logger.debug("默认的Json文件无法被正常解析, 正在重新生成josn文件中")
+                logger.debug("默认的Json文件无法被正常解析, 正在重新生成Json文件中")
         
         tshark_path = FlowAnalyzer.get_tshark_path(tshark_path)
         FlowAnalyzer.extract_json_file(fileName, display_filter, tshark_workDir, tshark_path)
