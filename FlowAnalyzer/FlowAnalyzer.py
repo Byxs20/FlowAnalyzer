@@ -36,15 +36,15 @@ class HttpPair(NamedTuple):
 class FlowAnalyzer:
     """FlowAnalyzer是一个流量分析器，用于解析和处理tshark导出的JSON数据文件"""
 
-    def __init__(self, jsonPath: str):
+    def __init__(self, json_path: str):
         """初始化FlowAnalyzer对象
 
         Parameters
         ----------
-        jsonPath : str
+        json_path : str
             tshark导出的JSON文件路径
         """
-        self.jsonPath = jsonPath
+        self.json_path = json_path
         self.check_json_file()
 
     def check_json_file(self):
@@ -58,11 +58,11 @@ class FlowAnalyzer:
         ValueError
             当JSON文件内容为空时抛出异常
         """
-        if not os.path.exists(self.jsonPath):
-            raise FileNotFoundError("您的tshark导出的JSON文件没有找到！JSON路径：%s" % self.jsonPath)
+        if not os.path.exists(self.json_path):
+            raise FileNotFoundError("您的tshark导出的JSON文件没有找到！JSON路径：%s" % self.json_path)
 
-        if os.path.getsize(self.jsonPath) == 0:
-            raise ValueError("您的tshark导出的JSON文件内容为空！JSON路径：%s" % self.jsonPath)
+        if os.path.getsize(self.json_path) == 0:
+            raise ValueError("您的tshark导出的JSON文件内容为空！JSON路径：%s" % self.json_path)
 
     def parse_packet(self, packet: dict) -> Tuple[int, int, float, str, str]:
         """解析Json中的关键信息字段
@@ -92,7 +92,6 @@ class FlowAnalyzer:
         return frame_num, request_in, time_epoch, full_uri, full_request
 
     def parse_http_json(self) -> Tuple[Dict[int, Request], Dict[int, Response]]:
-        # sourcery skip: use-named-expression
         """解析JSON数据文件中的HTTP请求和响应信息
 
         Returns
@@ -100,7 +99,7 @@ class FlowAnalyzer:
         tuple
             包含请求字典和响应列表的元组
         """
-        with open(self.jsonPath, "r", encoding="utf-8") as f:
+        with open(self.json_path, "r", encoding="utf-8") as f:
             data = json.load(f)
 
         requests, responses = {}, {}
@@ -149,17 +148,16 @@ class FlowAnalyzer:
                 yield HttpPair(request=None, response=resp)
 
     @staticmethod
-    def get_hash(filePath: str, display_filter: str) -> str:
-        with open(filePath, "rb") as f:
+    def get_hash(file_path: str, display_filter: str) -> str:
+        with open(file_path, "rb") as f:
             return hashlib.md5(f.read() + display_filter.encode()).hexdigest()
 
     @staticmethod
-    def extract_json_file(fileName: str, display_filter: str, tshark_workDir: str, tshark_path: str) -> None:
-        # sourcery skip: replace-interpolation-with-fstring, use-fstring-for-formatting
+    def extract_json_file(file_name: str, display_filter: str, tshark_work_dir: str, tshark_path: str) -> None:
         command = [
             tshark_path,
-            "-r", fileName,
-            "-Y", f"(tcp.reassembled_in) or ({display_filter})",
+            "-r", file_name,
+            "-Y", f"({display_filter})",
             "-T", "json",
             "-e", "http.response.code",
             "-e", "http.request_in",
@@ -169,33 +167,43 @@ class FlowAnalyzer:
             "-e", "frame.time_epoch",
             "-e", "exported_pdu.exported_pdu",
             "-e", "http.request.full_uri",
-            ">", "output.json",
         ]
 
-        _, stderr = subprocess.Popen(command, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, cwd=tshark_workDir).communicate()
-        if stderr != b"" and b"WARNING" not in stderr:
-            print(f"[Waring/Error]: {stderr}")
+        with open(f"{tshark_work_dir}/output.json", "wb") as output_file:
+            process = subprocess.Popen(
+                command,
+                stdout=output_file,
+                stderr=subprocess.PIPE,
+                cwd=tshark_work_dir
+            )
+            _, stderr = process.communicate()
+
+        if stderr and b"WARNING" not in stderr:
+            try:
+                print(f"[Warning/Error]: {stderr.decode('utf-8')}")
+            except Exception:
+                print(f"[Warning/Error]: {stderr.decode('gbk')}")
 
     @staticmethod
-    def move_and_addMD5Sum(tshark_jsonPath: str, jsonWordPath: str, MD5Sum: str) -> None:
-        if tshark_jsonPath != jsonWordPath:
-            shutil.move(tshark_jsonPath, jsonWordPath)
+    def move_and_add_md5sum(tshark_json_path: str, json_work_path: str, md5_sum: str) -> None:
+        if tshark_json_path != json_work_path:
+            shutil.move(tshark_json_path, json_work_path)
 
-        with open(jsonWordPath, "r", encoding="utf-8") as f:
+        with open(json_work_path, "r", encoding="utf-8") as f:
             data = json.load(f)
-        data[0]["MD5Sum"] = MD5Sum
+        data[0]["MD5Sum"] = md5_sum
 
-        with open(jsonWordPath, "w", encoding="utf-8") as f:
+        with open(json_work_path, "w", encoding="utf-8") as f:
             json.dump(data, f, indent=2)
 
     @staticmethod
-    def get_json_data(filePath: str, display_filter: str, tshark_path: Optional[str] = None) -> str:
+    def get_json_data(file_path: str, display_filter: str, tshark_path: Optional[str] = None) -> str:
         # sourcery skip: replace-interpolation-with-fstring
         """获取JSON数据并保存至文件，保存目录是当前工作目录，也就是您运行脚本所在目录
 
         Parameters
         ----------
-        filePath : str
+        file_path : str
             待处理的数据文件路径
         display_filter : str
             WireShark的显示过滤器
@@ -205,30 +213,30 @@ class FlowAnalyzer:
         str
             保存JSON数据的文件路径
         """
-        if not os.path.exists(filePath):
-            raise FileNotFoundError("您的填写的流量包没有找到！流量包路径：%s" % filePath)
+        if not os.path.exists(file_path):
+            raise FileNotFoundError("您的填写的流量包没有找到！流量包路径：%s" % file_path)
 
-        MD5Sum = FlowAnalyzer.get_hash(filePath, display_filter)
-        workDir = os.getcwd()
-        tshark_workDir = os.path.dirname(os.path.abspath(filePath))
-        tshark_jsonPath = os.path.join(tshark_workDir, "output.json")
-        jsonWordPath = os.path.join(workDir, "output.json")
-        fileName = os.path.basename(filePath)
+        md5_sum = FlowAnalyzer.get_hash(file_path, display_filter)
+        work_dir = os.getcwd()
+        tshark_work_dir = os.path.dirname(os.path.abspath(file_path))
+        tshark_json_path = os.path.join(tshark_work_dir, "output.json")
+        json_work_path = os.path.join(work_dir, "output.json")
+        file_name = os.path.basename(file_path)
 
-        if os.path.exists(jsonWordPath):
+        if os.path.exists(json_work_path):
             try:
-                with open(jsonWordPath, "r", encoding="utf-8") as f:
+                with open(json_work_path, "r", encoding="utf-8") as f:
                     data = json.load(f)
-                    if data[0].get("MD5Sum") == MD5Sum:
+                    if data[0].get("MD5Sum") == md5_sum:
                         logger.debug("匹配HASH校验无误，自动返回Json文件路径!")
-                        return jsonWordPath
+                        return json_work_path
             except Exception:
                 logger.debug("默认的Json文件无法被正常解析, 正在重新生成Json文件中")
         
         tshark_path = FlowAnalyzer.get_tshark_path(tshark_path)
-        FlowAnalyzer.extract_json_file(fileName, display_filter, tshark_workDir, tshark_path)
-        FlowAnalyzer.move_and_addMD5Sum(tshark_jsonPath, jsonWordPath, MD5Sum)
-        return jsonWordPath
+        FlowAnalyzer.extract_json_file(file_name, display_filter, tshark_work_dir, tshark_path)
+        FlowAnalyzer.move_and_add_md5sum(tshark_json_path, json_work_path, md5_sum)
+        return json_work_path
 
     @staticmethod
     def get_tshark_path(tshark_path: Optional[str]) -> str:
@@ -253,8 +261,7 @@ class FlowAnalyzer:
             exit(-1)
         return use_tshark_path
 
-    def Split_HTTP_headers(self, file_data: bytes) -> Tuple[bytes, bytes]:
-        # sourcery skip: use-named-expression
+    def split_http_headers(self, file_data: bytes) -> Tuple[bytes, bytes]:
         headerEnd = file_data.find(b"\r\n\r\n")
         if headerEnd != -1:
             headerEnd += 4
@@ -266,7 +273,7 @@ class FlowAnalyzer:
             print("[Warning] 没有找到headers和response的划分位置!")
             return b"", file_data
 
-    def Dechunck_HTTP_response(self, file_data: bytes) -> bytes:
+    def dechunck_http_response(self, file_data: bytes) -> bytes:
         """解码分块TCP数据
 
         Parameters
@@ -306,10 +313,10 @@ class FlowAnalyzer:
         tuple
             包含header和file_data的元组
         """
-        header, file_data = self.Split_HTTP_headers(bytes.fromhex(full_request))
+        header, file_data = self.split_http_headers(bytes.fromhex(full_request))
 
         with contextlib.suppress(Exception):
-            file_data = self.Dechunck_HTTP_response(file_data)
+            file_data = self.dechunck_http_response(file_data)
 
         with contextlib.suppress(Exception):
             if file_data.startswith(b"\x1F\x8B"):
