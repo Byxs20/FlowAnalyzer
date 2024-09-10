@@ -34,7 +34,7 @@ tshark_path = r"C:\Program Files\Wireshark\tshark.exe"
 ```
 $ git clone https://github.com/Byxs20/FlowAnalyzer.git
 $ cd ./FlowAnalyzer/
-$ python -m tests.demo
+$ python tests\demo.py
 ```
 
 运行结果：
