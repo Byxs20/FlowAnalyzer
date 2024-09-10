@@ -3,7 +3,6 @@ import gzip
 import hashlib
 import json
 import os
-import shutil
 import subprocess
 from typing import Dict, Iterable, NamedTuple, Optional, Tuple
 from urllib import parse
@@ -153,7 +152,7 @@ class FlowAnalyzer:
             return hashlib.md5(f.read() + display_filter.encode()).hexdigest()
 
     @staticmethod
-    def extract_json_file(file_name: str, display_filter: str, tshark_work_dir: str, tshark_path: str) -> None:
+    def extract_json_file(file_name: str, display_filter: str, tshark_path: str, tshark_work_dir: str, json_work_path: str) -> None:
         command = [
             tshark_path,
             "-r", file_name,
@@ -168,8 +167,9 @@ class FlowAnalyzer:
             "-e", "exported_pdu.exported_pdu",
             "-e", "http.request.full_uri",
         ]
-
-        with open(f"{tshark_work_dir}/output.json", "wb") as output_file:
+        logger.debug(f"导出Json命令: {command}")
+        
+        with open(json_work_path, "wb") as output_file:
             process = subprocess.Popen(
                 command,
                 stdout=output_file,
@@ -177,6 +177,7 @@ class FlowAnalyzer:
                 cwd=tshark_work_dir
             )
             _, stderr = process.communicate()
+        logger.debug(f"导出Json文件路径: {json_work_path}")
 
         if stderr and b"WARNING" not in stderr:
             try:
@@ -185,10 +186,7 @@ class FlowAnalyzer:
                 print(f"[Warning/Error]: {stderr.decode('gbk')}")
 
     @staticmethod
-    def move_and_add_md5sum(tshark_json_path: str, json_work_path: str, md5_sum: str) -> None:
-        if tshark_json_path != json_work_path:
-            shutil.move(tshark_json_path, json_work_path)
-
+    def add_md5sum(json_work_path: str, md5_sum: str) -> None:
         with open(json_work_path, "r", encoding="utf-8") as f:
             data = json.load(f)
         data[0]["MD5Sum"] = md5_sum
@@ -217,9 +215,10 @@ class FlowAnalyzer:
             raise FileNotFoundError("您的填写的流量包没有找到！流量包路径：%s" % file_path)
 
         md5_sum = FlowAnalyzer.get_hash(file_path, display_filter)
+        logger.debug(f"md5校验值: {md5_sum}")
+        
         work_dir = os.getcwd()
-        tshark_work_dir = os.path.dirname(os.path.abspath(file_path))
-        tshark_json_path = os.path.join(tshark_work_dir, "output.json")
+        tshark_command_work_dir = os.path.dirname(os.path.abspath(file_path))
         json_work_path = os.path.join(work_dir, "output.json")
         file_name = os.path.basename(file_path)
 
@@ -228,14 +227,14 @@ class FlowAnalyzer:
                 with open(json_work_path, "r", encoding="utf-8") as f:
                     data = json.load(f)
                     if data[0].get("MD5Sum") == md5_sum:
-                        logger.debug("匹配HASH校验无误，自动返回Json文件路径!")
+                        logger.debug("匹配md5校验无误，自动返回Json文件路径!")
                         return json_work_path
             except Exception:
                 logger.debug("默认的Json文件无法被正常解析, 正在重新生成Json文件中")
         
         tshark_path = FlowAnalyzer.get_tshark_path(tshark_path)
-        FlowAnalyzer.extract_json_file(file_name, display_filter, tshark_work_dir, tshark_path)
-        FlowAnalyzer.move_and_add_md5sum(tshark_json_path, json_work_path, md5_sum)
+        FlowAnalyzer.extract_json_file(file_name, display_filter, tshark_path, tshark_command_work_dir, json_work_path)
+        FlowAnalyzer.add_md5sum(json_work_path, md5_sum)
         return json_work_path
 
     @staticmethod
@@ -243,6 +242,8 @@ class FlowAnalyzer:
         default_tshark_path = get_default_tshark_path()
         if not os.path.exists(default_tshark_path):
             logger.debug("没有检测到tshark存在, 请查看并检查tshark_path")
+        else:
+            logger.debug("检测到默认tshark存在!")
 
         if tshark_path is None:
             logger.debug("您没有传入tshark_path, 请传入tshark_path")
