@@ -4,6 +4,7 @@ import hashlib
 import json
 import os
 import subprocess
+from dataclasses import dataclass
 from typing import Dict, Iterable, NamedTuple, Optional, Tuple
 from urllib import parse
 
@@ -11,7 +12,8 @@ from .logging_config import logger
 from .Path import get_default_tshark_path
 
 
-class Request(NamedTuple):
+@dataclass
+class Request:
     frame_num: int
     header: bytes
     file_data: bytes
@@ -19,12 +21,13 @@ class Request(NamedTuple):
     time_epoch: float
 
 
-class Response(NamedTuple):
+@dataclass
+class Response:
     frame_num: int
     header: bytes
     file_data: bytes
-    request_in: int
     time_epoch: float
+    _request_in: Optional[int]
 
 
 class HttpPair(NamedTuple):
@@ -111,7 +114,7 @@ class FlowAnalyzer:
             if packet.get("http.response.code"):
                 responses[frame_num] = Response(
                     frame_num=frame_num,
-                    request_in=request_in,
+                    _request_in=request_in,
                     header=header,
                     file_data=file_data,
                     time_epoch=time_epoch,
@@ -130,20 +133,20 @@ class FlowAnalyzer:
             包含请求和响应信息的字典迭代器
         """
         requests, responses = self.parse_http_json()
-        response_map = {r.request_in: r for r in responses.values()}
+        response_map = {r._request_in: r for r in responses.values()}
         yielded_resps = []
         for req_id, req in requests.items():
             resp = response_map.get(req_id)
             if resp:
                 yielded_resps.append(resp)
-                resp = resp._replace(request_in=None)
+                resp._request_in = None
                 yield HttpPair(request=req, response=resp)
             else:
                 yield HttpPair(request=req, response=None)
 
         for resp in response_map.values():
             if resp not in yielded_resps:
-                resp = resp._replace(request_in=None)
+                resp._request_in = None
                 yield HttpPair(request=None, response=resp)
 
     @staticmethod
@@ -155,27 +158,33 @@ class FlowAnalyzer:
     def extract_json_file(file_name: str, display_filter: str, tshark_path: str, tshark_work_dir: str, json_work_path: str) -> None:
         command = [
             tshark_path,
-            "-r", file_name,
-            "-Y", f"({display_filter})",
-            "-T", "json",
-            "-e", "http.response.code",
-            "-e", "http.request_in",
-            "-e", "tcp.reassembled.data",
-            "-e", "frame.number",
-            "-e", "tcp.payload",
-            "-e", "frame.time_epoch",
-            "-e", "exported_pdu.exported_pdu",
-            "-e", "http.request.full_uri",
+            "-r",
+            file_name,
+            "-Y",
+            f"({display_filter})",
+            "-T",
+            "json",
+            "-e",
+            "http.response.code",
+            "-e",
+            "http.request_in",
+            "-e",
+            "tcp.reassembled.data",
+            "-e",
+            "frame.number",
+            "-e",
+            "tcp.payload",
+            "-e",
+            "frame.time_epoch",
+            "-e",
+            "exported_pdu.exported_pdu",
+            "-e",
+            "http.request.full_uri",
         ]
         logger.debug(f"导出Json命令: {command}")
-        
+
         with open(json_work_path, "wb") as output_file:
-            process = subprocess.Popen(
-                command,
-                stdout=output_file,
-                stderr=subprocess.PIPE,
-                cwd=tshark_work_dir
-            )
+            process = subprocess.Popen(command, stdout=output_file, stderr=subprocess.PIPE, cwd=tshark_work_dir)
             _, stderr = process.communicate()
         logger.debug(f"导出Json文件路径: {json_work_path}")
 
@@ -216,7 +225,7 @@ class FlowAnalyzer:
 
         md5_sum = FlowAnalyzer.get_hash(file_path, display_filter)
         logger.debug(f"md5校验值: {md5_sum}")
-        
+
         work_dir = os.getcwd()
         tshark_command_work_dir = os.path.dirname(os.path.abspath(file_path))
         json_work_path = os.path.join(work_dir, "output.json")
@@ -231,7 +240,7 @@ class FlowAnalyzer:
                         return json_work_path
             except Exception:
                 logger.debug("默认的Json文件无法被正常解析, 正在重新生成Json文件中")
-        
+
         tshark_path = FlowAnalyzer.get_tshark_path(tshark_path)
         FlowAnalyzer.extract_json_file(file_name, display_filter, tshark_path, tshark_command_work_dir, json_work_path)
         FlowAnalyzer.add_md5sum(json_work_path, md5_sum)
@@ -320,6 +329,6 @@ class FlowAnalyzer:
             file_data = self.dechunck_http_response(file_data)
 
         with contextlib.suppress(Exception):
-            if file_data.startswith(b"\x1F\x8B"):
+            if file_data.startswith(b"\x1f\x8b"):
                 file_data = gzip.decompress(file_data)
         return header, file_data
