@@ -4,7 +4,7 @@ import os
 import sqlite3
 import subprocess
 from dataclasses import dataclass
-from typing import Dict, Iterable, NamedTuple, Optional, Tuple
+from typing import Iterable, NamedTuple, Optional, Tuple
 from urllib import parse
 
 import ijson
@@ -69,57 +69,54 @@ class FlowAnalyzer:
         if not os.path.exists(self.db_path):
             raise FileNotFoundError(f"未找到数据文件或缓存数据库: {self.db_path}，请先调用 get_json_data 生成。")
 
-    def _load_from_db(self) -> Tuple[Dict[int, Request], Dict[int, Response]]:
-        """从 SQLite 数据库加载数据"""
-        requests, responses = {}, {}
-        try:
-            with sqlite3.connect(self.db_path) as conn:
-                cursor = conn.cursor()
-
-                # 简单防错检查
-                try:
-                    cursor.execute("SELECT count(*) FROM requests")
-                    if cursor.fetchone()[0] == 0:
-                        cursor.execute("SELECT count(*) FROM responses")
-                        if cursor.fetchone()[0] == 0:
-                            return {}, {}
-                except sqlite3.OperationalError:
-                    logger.error("数据库损坏或表不存在")
-                    return {}, {}
-
-                logger.debug(f"正在加载缓存数据: {self.db_path}")
-
-                # 加载 Requests
-                cursor.execute("SELECT frame_num, header, file_data, full_uri, time_epoch FROM requests")
-                for row in cursor.fetchall():
-                    requests[row[0]] = Request(row[0], row[1], row[2], row[3], row[4])
-
-                # 加载 Responses
-                cursor.execute("SELECT frame_num, header, file_data, time_epoch, request_in FROM responses")
-                for row in cursor.fetchall():
-                    responses[row[0]] = Response(row[0], row[1], row[2], row[3], row[4])
-
-                return requests, responses
-        except sqlite3.Error as e:
-            logger.error(f"读取数据库出错: {e}")
-            return {}, {}
-
     def generate_http_dict_pairs(self) -> Iterable[HttpPair]:
-        """生成HTTP请求和响应信息的字典对"""
-        requests, responses = self._load_from_db()
-        response_map = {r._request_in: r for r in responses.values()}
-        yielded_resps = set()
+        """生成HTTP请求和响应信息的字典对 (SQL JOIN 高性能版)"""
+        if not os.path.exists(self.db_path):
+            return
 
-        for req_id, req in requests.items():
-            resp = response_map.get(req_id)
-            if resp:
-                yielded_resps.add(resp.frame_num)
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.cursor()
+            # 开启查询优化
+            cursor.execute("PRAGMA query_only = 1;")
+
+            # === 第一步：配对查询 ===
+            # 利用 SQLite 的 LEFT JOIN 直接匹配请求和响应
+            # 避免将所有数据加载到 Python 内存中
+            sql_pair = """
+            SELECT 
+                req.frame_num, req.header, req.file_data, req.full_uri, req.time_epoch,  -- 0-4 (Request)
+                resp.frame_num, resp.header, resp.file_data, resp.time_epoch, resp.request_in -- 5-9 (Response)
+            FROM requests req
+            LEFT JOIN responses resp ON req.frame_num = resp.request_in
+            ORDER BY req.frame_num ASC
+            """
+
+            cursor.execute(sql_pair)
+
+            # 流式遍历结果，内存占用极低
+            for row in cursor:
+                # 构建 Request 对象
+                # 注意处理 NULL 情况，虽然 requests 表理论上不为空，但防万一用 or b''
+                req = Request(frame_num=row[0], header=row[1] or b"", file_data=row[2] or b"", full_uri=row[3] or "", time_epoch=row[4])
+
+                resp = None
+                # 如果 row[5] (Response frame_num) 不为空，说明匹配到了响应
+                if row[5] is not None:
+                    resp = Response(frame_num=row[5], header=row[6] or b"", file_data=row[7] or b"", time_epoch=row[8], _request_in=row[9])
+
                 yield HttpPair(request=req, response=resp)
-            else:
-                yield HttpPair(request=req, response=None)
 
-        for resp in responses.values():
-            if resp.frame_num not in yielded_resps:
+            # === 第二步：孤儿响应查询 ===
+            # 找出那些有 request_in 但找不到对应 Request 的响应包
+            sql_orphan = """
+            SELECT frame_num, header, file_data, time_epoch, request_in
+            FROM responses
+            WHERE request_in NOT IN (SELECT frame_num FROM requests)
+            """
+            cursor.execute(sql_orphan)
+
+            for row in cursor:
+                resp = Response(frame_num=row[0], header=row[1] or b"", file_data=row[2] or b"", time_epoch=row[3], _request_in=row[4])
                 yield HttpPair(request=None, response=resp)
 
     # =========================================================================
@@ -219,6 +216,9 @@ class FlowAnalyzer:
 
             cursor.execute("CREATE TABLE requests (frame_num INTEGER PRIMARY KEY, header BLOB, file_data BLOB, full_uri TEXT, time_epoch REAL)")
             cursor.execute("CREATE TABLE responses (frame_num INTEGER PRIMARY KEY, header BLOB, file_data BLOB, time_epoch REAL, request_in INTEGER)")
+
+            # === 核心优化：增加索引，极大加速 SQL JOIN 配对 ===
+            cursor.execute("CREATE INDEX idx_resp_req_in ON responses(request_in)")
 
             cursor.execute("""
                 CREATE TABLE meta_info (
@@ -345,10 +345,7 @@ class FlowAnalyzer:
 
     @staticmethod
     def dechunck_http_response(file_data: bytes) -> bytes:
-        """解码分块TCP数据 (修复版)
-        注意：如果数据不是 Chunked 格式，此函数必须抛出异常，
-        以便外层逻辑回退到使用原始数据。
-        """
+        """解码分块TCP数据"""
         if not file_data:
             return b""
 
