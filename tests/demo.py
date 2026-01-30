@@ -10,7 +10,7 @@ display_filter = "(http.request and urlencoded-form) or (http.request and data-t
 json_path = FlowAnalyzer.get_json_data(flowPath, display_filter=display_filter)
 for http_seq_num, http in enumerate(FlowAnalyzer(json_path).generate_http_dict_pairs(), start=1):
     print(f"[+] 正在处理第{http_seq_num}个HTTP流!")
-    
+
     request, response = http.request, http.response
     if request:
         request_num, header, file_data, time_epoch = request.frame_num, request.header, request.file_data, request.time_epoch
