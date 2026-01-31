@@ -1,4 +1,5 @@
 import contextlib
+import csv
 import gzip
 import os
 import sqlite3
@@ -6,8 +7,6 @@ import subprocess
 from dataclasses import dataclass
 from typing import Iterable, NamedTuple, Optional, Tuple
 from urllib import parse
-
-import ijson
 
 from .logging_config import logger
 from .Path import get_default_tshark_path
@@ -205,6 +204,13 @@ class FlowAnalyzer:
     @staticmethod
     def _stream_tshark_to_db(pcap_path: str, display_filter: str, tshark_path: str, db_path: str):
         """流式解析并存入DB，同时记录元数据"""
+        # 增加 CSV 字段大小限制，防止超大包报错
+        # 将限制设置为系统最大值，注意 32位系统不要超过 2GB (但 Python int通常是动态的，保险起见设大一点)
+        try:
+            csv.field_size_limit(500 * 1024 * 1024)  # 500MB
+        except Exception:
+            # 如果失败，尝试取最大值
+            csv.field_size_limit(int(2**31 - 1))
 
         if os.path.exists(db_path):
             os.remove(db_path)
@@ -217,9 +223,6 @@ class FlowAnalyzer:
             cursor.execute("CREATE TABLE requests (frame_num INTEGER PRIMARY KEY, header BLOB, file_data BLOB, full_uri TEXT, time_epoch REAL)")
             cursor.execute("CREATE TABLE responses (frame_num INTEGER PRIMARY KEY, header BLOB, file_data BLOB, time_epoch REAL, request_in INTEGER)")
 
-            # === 核心优化：增加索引，极大加速 SQL JOIN 配对 ===
-            cursor.execute("CREATE INDEX idx_resp_req_in ON responses(request_in)")
-
             cursor.execute("""
                 CREATE TABLE meta_info (
                     id INTEGER PRIMARY KEY, 
@@ -231,6 +234,7 @@ class FlowAnalyzer:
             """)
             conn.commit()
 
+        # 修改命令为 -T fields 模式
         command = [
             tshark_path,
             "-r",
@@ -238,55 +242,75 @@ class FlowAnalyzer:
             "-Y",
             f"({display_filter})",
             "-T",
-            "json",
+            "fields",
+            # 指定输出字段
             "-e",
-            "http.response.code",
+            "http.response.code",  # 0
             "-e",
-            "http.request_in",
+            "http.request_in",  # 1
             "-e",
-            "tcp.reassembled.data",
+            "tcp.reassembled.data",  # 2
             "-e",
-            "frame.number",
+            "frame.number",  # 3
             "-e",
-            "tcp.payload",
+            "tcp.payload",  # 4
             "-e",
-            "frame.time_epoch",
+            "frame.time_epoch",  # 5
             "-e",
-            "exported_pdu.exported_pdu",
+            "exported_pdu.exported_pdu",  # 6
             "-e",
-            "http.request.full_uri",
+            "http.request.full_uri",  # 7
+            # 格式控制
+            "-E",
+            "header=n",  # 不输出表头
+            "-E",
+            "separator=|",  # 使用 | 分割 (比逗号更安全)
+            "-E",
+            "quote=d",  # 双引号包裹
+            "-E",
+            "occurrence=f",  # 每个字段只取第一个值 (First)
         ]
 
         logger.debug(f"执行 Tshark: {command}")
 
-        process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, cwd=os.path.dirname(os.path.abspath(pcap_path)))
+        # 使用 utf-8 编码读取 stdout text mode
+        process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, cwd=os.path.dirname(os.path.abspath(pcap_path)), encoding="utf-8", errors="replace")
 
         db_req_rows = []
         db_resp_rows = []
         BATCH_SIZE = 5000
 
         try:
-            parser = ijson.items(process.stdout, "item")
-
+            # 使用 csv.reader 解析 stdout 流
+            reader = csv.reader(process.stdout, delimiter="|", quotechar='"')  # type: ignore
             with sqlite3.connect(db_path) as conn:
                 cursor = conn.cursor()
 
-                for packet in parser:
-                    layers = packet.get("_source", {}).get("layers", {})
-                    if not layers:
+                for row in reader:
+                    # row 是一个列表，对应上面的 -e 顺序
+                    # [code, req_in, reassembled, frame, payload, epoch, pdu, uri]
+                    if not row:
                         continue
 
                     try:
-                        frame_num, request_in, time_epoch, full_uri, full_request = FlowAnalyzer.parse_packet_data(layers)
+                        # 解析数据
+                        frame_num, request_in, time_epoch, full_uri, full_request = FlowAnalyzer.parse_packet_data(row)
+
                         if not full_request:
                             continue
+
                         header, file_data = FlowAnalyzer.extract_http_file_data(full_request)
 
-                        if layers.get("http.response.code"):
+                        # 判断是请求还是响应
+                        # http.response.code (index 0) 是否为空
+                        if row[0]:
+                            # Response
                             db_resp_rows.append((frame_num, header, file_data, time_epoch, request_in))
                         else:
+                            # Request
                             db_req_rows.append((frame_num, header, file_data, full_uri, time_epoch))
 
+                        # 批量插入
                         if len(db_req_rows) >= BATCH_SIZE:
                             cursor.executemany("INSERT OR REPLACE INTO requests VALUES (?,?,?,?,?)", db_req_rows)
                             db_req_rows.clear()
@@ -294,13 +318,18 @@ class FlowAnalyzer:
                             cursor.executemany("INSERT OR REPLACE INTO responses VALUES (?,?,?,?,?)", db_resp_rows)
                             db_resp_rows.clear()
 
-                    except Exception:
+                    except Exception as e:
+                        # 偶尔可能会有解析失败的行，跳过即可
                         pass
 
+                # 插入剩余数据
                 if db_req_rows:
                     cursor.executemany("INSERT OR REPLACE INTO requests VALUES (?,?,?,?,?)", db_req_rows)
                 if db_resp_rows:
                     cursor.executemany("INSERT OR REPLACE INTO responses VALUES (?,?,?,?,?)", db_resp_rows)
+
+                # --- 优化点：插入完数据后再创建索引，速度更快 ---
+                cursor.execute("CREATE INDEX idx_resp_req_in ON responses(request_in)")
 
                 pcap_mtime = os.path.getmtime(pcap_path)
                 pcap_size = os.path.getsize(pcap_path)
@@ -319,18 +348,29 @@ class FlowAnalyzer:
     # --- 辅助静态方法 ---
 
     @staticmethod
-    def parse_packet_data(packet: dict) -> Tuple[int, int, float, str, str]:
-        frame_num = int(packet["frame.number"][0])
-        request_in = int(packet["http.request_in"][0]) if packet.get("http.request_in") else frame_num
-        full_uri = parse.unquote(packet["http.request.full_uri"][0]) if packet.get("http.request.full_uri") else ""
-        time_epoch = float(packet["frame.time_epoch"][0])
+    def parse_packet_data(row: list) -> Tuple[int, int, float, str, str]:
+        # row definition:
+        # 0: http.response.code
+        # 1: http.request_in
+        # 2: tcp.reassembled.data
+        # 3: frame.number
+        # 4: tcp.payload
+        # 5: frame.time_epoch
+        # 6: exported_pdu.exported_pdu
+        # 7: http.request.full_uri
 
-        if packet.get("tcp.reassembled.data"):
-            full_request = packet["tcp.reassembled.data"][0]
-        elif packet.get("tcp.payload"):
-            full_request = packet["tcp.payload"][0]
+        frame_num = int(row[3])
+        request_in = int(row[1]) if row[1] else frame_num
+        full_uri = parse.unquote(row[7]) if row[7] else ""
+        time_epoch = float(row[5])
+
+        if row[2]:
+            full_request = row[2]
+        elif row[4]:
+            full_request = row[4]
         else:
-            full_request = packet["exported_pdu.exported_pdu"][0] if packet.get("exported_pdu.exported_pdu") else ""
+            full_request = row[6] if row[6] else ""
+
         return frame_num, request_in, time_epoch, full_uri, full_request
 
     @staticmethod
