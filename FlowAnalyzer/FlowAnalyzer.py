@@ -41,7 +41,7 @@ class FlowAnalyzer:
     """
     FlowAnalyzer 流量分析器 (智能缓存版)
     特点：
-    1. Tshark -> Pipe -> ijson -> SQLite (无中间JSON文件)
+    1. Tshark -> Pipe -> CSV -> SQLite (无中间JSON文件)
     2. 智能校验：自动比对 Filter 和文件修改时间，防止缓存错乱
     3. 存储优化：数据库文件生成在流量包同级目录下
     """
