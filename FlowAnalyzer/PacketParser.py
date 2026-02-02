@@ -9,7 +9,7 @@ from .logging_config import logger
 
 class PacketParser:
     @staticmethod
-    def parse_packet_data(row: list) -> Tuple[int, int, float, str, bytes, bytes]:
+    def parse_packet_data(row: list) -> Tuple[int, int, float, str, bytes]:
         """
         解析 Tshark 输出的一行数据
         row definition (all bytes):
@@ -20,19 +20,18 @@ class PacketParser:
         4: tcp.payload
         5: frame.time_epoch
         6: exported_pdu.exported_pdu
-        7: http.request.full_uri
-        8: http.file_data
-        9: tcp.segment.count
+        7: http.request.full_uri 
+        8: tcp.segment.count
         """
         frame_num = int(row[3])
         request_in = int(row[1]) if row[1] else frame_num
         # Decode only URI to string
         full_uri = parse.unquote(row[7].decode("utf-8", errors="replace")) if row[7] else ""
         time_epoch = float(row[5])
-        http_file_data = row[8] if len(row) > 8 else b""
 
         # Logic for Raw Packet (Header Source)
-        is_reassembled = len(row) > 9 and row[9]
+        # Previous index 9 is now 8 since we removed http.file_data
+        is_reassembled = len(row) > 8 and row[8]
 
         if is_reassembled and row[2]:
             full_request = row[2]
@@ -42,7 +41,7 @@ class PacketParser:
             # Fallback (e.g. Exported PDU)
             full_request = row[2] if row[2] else (row[6] if row[6] else b"")
 
-        return frame_num, request_in, time_epoch, full_uri, full_request, http_file_data
+        return frame_num, request_in, time_epoch, full_uri, full_request
 
     @staticmethod
     def split_http_headers(file_data: bytes) -> Tuple[bytes, bytes]:
@@ -67,6 +66,10 @@ class PacketParser:
         while cursor < total_len:
             newline_idx = file_data.find(b"\n", cursor)
             if newline_idx == -1:
+                # If no newline found, maybe it's just remaining data (though strictly should end with 0 chunk)
+                # But for robustness we might perform a "best effort" or just stop.
+                # raising ValueError("Not chunked data") might be too aggressive if we are just "trying" to dechunk
+                # Let's assume non-chunked if strict format not found
                 raise ValueError("Not chunked data")
 
             size_line = file_data[cursor:newline_idx].strip()
@@ -74,12 +77,20 @@ class PacketParser:
                 cursor = newline_idx + 1
                 continue
 
-            chunk_size = int(size_line, 16)
+            try:
+                chunk_size = int(size_line, 16)
+            except ValueError:
+                raise ValueError("Invalid chunk size")
+
             if chunk_size == 0:
                 break
 
             data_start = newline_idx + 1
             data_end = data_start + chunk_size
+
+            # Robustness check
+            if data_start > total_len:
+                break
 
             if data_end > total_len:
                 chunks.append(file_data[data_start:])
@@ -88,51 +99,38 @@ class PacketParser:
             chunks.append(file_data[data_start:data_end])
 
             cursor = data_end
+            # Skip CRLF after chunk data
             while cursor < total_len and file_data[cursor] in (13, 10):
                 cursor += 1
 
         return b"".join(chunks)
 
     @staticmethod
-    def extract_http_file_data(full_request: bytes, http_file_data: bytes) -> Tuple[bytes, bytes]:
+    def extract_http_file_data(full_request: bytes) -> Tuple[bytes, bytes]:
         """
         提取HTTP请求或响应中的文件数据 (混合模式 - 二进制优化版)
         """
         header = b""
         file_data = b""
 
+        if not full_request:
+            return b"", b""
         try:
-            # --- 1. 提取 Header ---
-            if full_request:
-                raw_bytes = binascii.unhexlify(full_request)
-                h_part, _ = PacketParser.split_http_headers(raw_bytes)
-                header = h_part
+            raw_bytes = binascii.unhexlify(full_request)
+            header, body_part = PacketParser.split_http_headers(raw_bytes)
 
-            # --- 2. 提取 Body ---
-            if http_file_data:
-                try:
-                    file_data = binascii.unhexlify(http_file_data)
-                    return header, file_data
-                except binascii.Error:
-                    logger.warning("解析 http.file_data Hex 失败，尝试回退到原始方式")
+            with contextlib.suppress(Exception):
+                body_part = PacketParser.dechunk_http_response(body_part)
 
-            # --- 3. 回退模式 (Fallback) ---
-            if full_request and not file_data:
-                raw_bytes = binascii.unhexlify(full_request)
-                _, body_part = PacketParser.split_http_headers(raw_bytes)
+            with contextlib.suppress(Exception):
+                if body_part.startswith(b"\x1f\x8b"):
+                    body_part = gzip.decompress(body_part)
 
-                with contextlib.suppress(Exception):
-                    body_part = PacketParser.dechunk_http_response(body_part)
-
-                with contextlib.suppress(Exception):
-                    if body_part.startswith(b"\x1f\x8b"):
-                        body_part = gzip.decompress(body_part)
-
-                file_data = body_part
+            file_data = body_part
             return header, file_data
 
-        except ValueError as e:
-            logger.error(f"Hex转换失败: {str(e)[:100]}...")
+        except binascii.Error:
+            logger.error("Hex转换失败")
             return b"", b""
         except Exception as e:
             logger.error(f"解析HTTP数据未知错误: {e}")
@@ -149,12 +147,12 @@ class PacketParser:
 
         row = line.split(b"\t")
         try:
-            frame_num, request_in, time_epoch, full_uri, full_request, http_file_data = PacketParser.parse_packet_data(row)
+            frame_num, request_in, time_epoch, full_uri, full_request = PacketParser.parse_packet_data(row)
 
-            if not full_request and not http_file_data:
+            if not full_request:
                 return None
 
-            header, file_data = PacketParser.extract_http_file_data(full_request, http_file_data)
+            header, file_data = PacketParser.extract_http_file_data(full_request)
 
             # row[0] is http.response.code (bytes)
             is_response = bool(row[0])
