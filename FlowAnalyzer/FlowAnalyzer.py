@@ -199,9 +199,7 @@ class FlowAnalyzer:
             "-e",
             "http.request.full_uri",  # 7
             "-e",
-            "http.file_data",  # 8
-            "-e",
-            "tcp.segment.count",  # 9
+            "tcp.segment.count",  # 8
             "-E",
             "header=n",
             "-E",
