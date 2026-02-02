@@ -20,7 +20,7 @@ class PacketParser:
         4: tcp.payload
         5: frame.time_epoch
         6: exported_pdu.exported_pdu
-        7: http.request.full_uri 
+        7: http.request.full_uri
         8: tcp.segment.count
         """
         frame_num = int(row[3])
@@ -48,9 +48,11 @@ class PacketParser:
         headerEnd = file_data.find(b"\r\n\r\n")
         if headerEnd != -1:
             return file_data[: headerEnd + 4], file_data[headerEnd + 4 :]
-        elif file_data.find(b"\n\n") != -1:
-            headerEnd = file_data.index(b"\n\n") + 2
-            return file_data[:headerEnd], file_data[headerEnd:]
+
+        headerEnd = file_data.find(b"\n\n")
+        if headerEnd != -1:
+            return file_data[: headerEnd + 2], file_data[headerEnd + 2 :]
+
         return b"", file_data
 
     @staticmethod
@@ -73,6 +75,10 @@ class PacketParser:
                 raise ValueError("Not chunked data")
 
             size_line = file_data[cursor:newline_idx].strip()
+            # Handle chunk extension: ignore everything after ';'
+            if b";" in size_line:
+                size_line = size_line.split(b";", 1)[0].strip()
+
             if not size_line:
                 cursor = newline_idx + 1
                 continue
