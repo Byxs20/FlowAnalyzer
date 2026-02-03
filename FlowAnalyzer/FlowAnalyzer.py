@@ -56,7 +56,7 @@ class FlowAnalyzer:
             sql_pair = """
             SELECT 
                 req.frame_num, req.header, req.file_data, req.full_uri, req.time_epoch,  -- 0-4 (Request)
-                resp.frame_num, resp.header, resp.file_data, resp.time_epoch, resp.request_in -- 5-9 (Response)
+                resp.frame_num, resp.header, resp.file_data, resp.time_epoch, resp.request_in, resp.status_code -- 5-10 (Response)
             FROM requests req
             LEFT JOIN responses resp ON req.frame_num = resp.request_in
             ORDER BY req.frame_num ASC
@@ -70,20 +70,20 @@ class FlowAnalyzer:
 
                 resp = None
                 if row[5] is not None:
-                    resp = Response(frame_num=row[5], header=row[6] or b"", file_data=row[7] or b"", time_epoch=row[8], _request_in=row[9])
+                    resp = Response(frame_num=row[5], header=row[6] or b"", file_data=row[7] or b"", time_epoch=row[8], _request_in=row[9], status_code=row[10] or 0)
 
                 yield HttpPair(request=req, response=resp)
 
             # === 第二步：孤儿响应查询 ===
             sql_orphan = """
-            SELECT frame_num, header, file_data, time_epoch, request_in
+            SELECT frame_num, header, file_data, time_epoch, request_in, status_code
             FROM responses
             WHERE request_in NOT IN (SELECT frame_num FROM requests)
             """
             cursor.execute(sql_orphan)
 
             for row in cursor:
-                resp = Response(frame_num=row[0], header=row[1] or b"", file_data=row[2] or b"", time_epoch=row[3], _request_in=row[4])
+                resp = Response(frame_num=row[0], header=row[1] or b"", file_data=row[2] or b"", time_epoch=row[3], _request_in=row[4], status_code=row[5] or 0)
                 yield HttpPair(request=None, response=resp)
 
     # =========================================================================
@@ -161,7 +161,7 @@ class FlowAnalyzer:
             cursor.execute("PRAGMA journal_mode = MEMORY")
 
             cursor.execute("CREATE TABLE requests (frame_num INTEGER PRIMARY KEY, header BLOB, file_data BLOB, full_uri TEXT, time_epoch REAL)")
-            cursor.execute("CREATE TABLE responses (frame_num INTEGER PRIMARY KEY, header BLOB, file_data BLOB, time_epoch REAL, request_in INTEGER)")
+            cursor.execute("CREATE TABLE responses (frame_num INTEGER PRIMARY KEY, header BLOB, file_data BLOB, time_epoch REAL, request_in INTEGER, status_code INTEGER)")
 
             cursor.execute("""
                 CREATE TABLE meta_info (
@@ -174,50 +174,29 @@ class FlowAnalyzer:
             """)
             conn.commit()
 
+        lua_script_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "tshark.lua")
+
+        # Pass filter via environment variable
+        env = os.environ.copy()
+        env["flowanalyzer_filter"] = display_filter
+
         command = [
             tshark_path,
             "-r",
             pcap_path,
-            "-Y",
-            f"({display_filter})",
-            "-T",
-            "fields",
-            "-e",
-            "http.response.code",  # 0
-            "-e",
-            "http.request_in",  # 1
-            "-e",
-            "tcp.reassembled.data",  # 2
-            "-e",
-            "frame.number",  # 3
-            "-e",
-            "tcp.payload",  # 4
-            "-e",
-            "frame.time_epoch",  # 5
-            "-e",
-            "exported_pdu.exported_pdu",  # 6
-            "-e",
-            "http.request.full_uri",  # 7
-            "-e",
-            "tcp.segment.count",  # 8
-            "-E",
-            "header=n",
-            "-E",
-            "separator=/t",
-            "-E",
-            "quote=n",
-            "-E",
-            "occurrence=f",
+            "-q",
+            "-X",
+            f"lua_script:{lua_script_path}",
         ]
 
-        logger.debug(f"执行 Tshark: {command}")
+        logger.debug(f"执行 Tshark: {' '.join(command)}")
         BATCH_SIZE = 2000
         MAX_PENDING_BATCHES = 20  # 控制内存中待处理的批次数量 (Backpressure)
 
         # 使用 ThreadPoolExecutor 并行处理数据
         max_workers = min(32, (os.cpu_count() or 1) + 4)
 
-        process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, cwd=os.path.dirname(os.path.abspath(pcap_path)))
+        process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, cwd=os.path.dirname(os.path.abspath(pcap_path)), env=env, encoding="utf-8", errors="replace")
         try:
             with sqlite3.connect(db_path) as conn:
                 cursor = conn.cursor()
@@ -236,14 +215,14 @@ class FlowAnalyzer:
 
                         for item in results:
                             if item["type"] == "response":
-                                db_resp_rows.append((item["frame_num"], item["header"], item["file_data"], item["time_epoch"], item["request_in"]))
+                                db_resp_rows.append((item["frame_num"], item["header"], item["file_data"], item["time_epoch"], item["request_in"], item.get("status_code", 0)))
                             else:
                                 db_req_rows.append((item["frame_num"], item["header"], item["file_data"], item["full_uri"], item["time_epoch"]))
 
                         if db_req_rows:
                             cursor.executemany("INSERT OR REPLACE INTO requests VALUES (?,?,?,?,?)", db_req_rows)
                         if db_resp_rows:
-                            cursor.executemany("INSERT OR REPLACE INTO responses VALUES (?,?,?,?,?)", db_resp_rows)
+                            cursor.executemany("INSERT OR REPLACE INTO responses VALUES (?,?,?,?,?,?)", db_resp_rows)
 
                     def submit_batch():
                         """提交当前批次到线程池"""
@@ -259,6 +238,10 @@ class FlowAnalyzer:
                     # --- Main Pipeline Loop ---
                     if process.stdout:
                         for line in process.stdout:
+                            # Strip newline
+                            line = line.strip()
+                            if not line:
+                                continue
                             current_batch.append(line)
 
                             if len(current_batch) >= BATCH_SIZE:
